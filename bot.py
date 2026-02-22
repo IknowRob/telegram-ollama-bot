@@ -29,15 +29,15 @@ from telegram.ext import (
 load_dotenv()
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-AUTHORIZED_USER_ID = 1991846232  # Robert's Telegram ID
+AUTHORIZED_USER_ID = int(os.getenv("AUTHORIZED_USER_ID", "1991846232"))
 
-WONDER_URL = "http://localhost:9600"
-WATCHER_URL = "http://localhost:9100"
-OLLAMA_URL = "http://localhost:11434"
-WONDER_TIMEOUT = 120
-OLLAMA_MODEL = "qwen2.5:14b-instruct"
+WONDER_URL = os.getenv("WONDER_URL", "http://localhost:9600")
+WATCHER_URL = os.getenv("WATCHER_URL", "http://localhost:9100")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+WONDER_TIMEOUT = int(os.getenv("WONDER_TIMEOUT", "120"))
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
 
-MAX_MESSAGE_LENGTH = 4096  # Telegram's limit
+MAX_MESSAGE_LENGTH = 4096  # Telegram hard limit — not configurable
 
 # =============================================================================
 # LOGGING
