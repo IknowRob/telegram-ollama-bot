@@ -26,7 +26,7 @@ This is a 335-line single-file bot. There is not much to navigate.
 | File | What it does |
 |------|--------------|
 | `bot.py` | The entire bot. All handlers, intent classification, Wonder Engine client, Watcher client. |
-| `bot.py:27` | **CRITICAL** — `TELEGRAM_TOKEN` hardcoded. This is a live token. Must move to env. |
+| `bot.py:29–39` | Configuration section — all values from env vars via `load_dotenv()`. Token is `os.environ` (fail-fast). |
 | `bot.py:53–77` | `is_authorized()` — single-user gate. `split_message()` — handles Telegram's 4096 char limit. |
 | `bot.py:80–84` | `format_wonder_response()` — formats Wonder Engine response for Telegram. Prepends `[CLASSIFICATION]`. |
 | `bot.py:91–118` | `classify_intent()` — calls Ollama directly with `temperature=0.0, num_predict=10` to classify as QUESTION or INFORMATION. Falls back to "question" on failure. |
@@ -39,8 +39,9 @@ This is a 335-line single-file bot. There is not much to navigate.
 | `bot.py:269–271` | `/help` handler — delegates to `start()`. |
 | `bot.py:273–310` | `handle_message()` — main handler. Intent → route to Wonder or Watcher. |
 | `bot.py:316–334` | `main()` — register handlers, start polling. |
-| `install_service.bat` | NSSM service setup. Sets dep on Ollama (not WonderEngine — known gap). Log rotation at 10MB. |
-| `requirements.txt` | 2 packages: `python-telegram-bot>=21.0`, `httpx>=0.25.0`. No upper bounds. |
+| `install_service.bat` | NSSM service setup. Depends on WonderEngine. Log rotation at 10MB. |
+| `requirements.txt` | 3 packages: `python-telegram-bot`, `httpx`, `python-dotenv`. No upper bounds. |
+| `.env` | Token and optional overrides. In `.gitignore` — never committed. |
 
 ---
 
@@ -118,30 +119,33 @@ Logs: `E:\telegram-ollama-bot\logs\bot.log`
 
 ---
 
-## Configuration (ALL in bot.py — known issue)
+## Configuration
 
-| Constant | Value | Notes |
-|----------|-------|-------|
-| `TELEGRAM_TOKEN` | (redacted) | **CRITICAL: hardcoded live token** |
+All config is loaded from environment variables. Secret values use `os.environ` (fail-fast),
+non-secret values use `os.getenv` with defaults. The `.env` file in the project root is
+loaded by `python-dotenv` at startup.
+
+| Env Var | Default | Notes |
+|---------|---------|-------|
+| `TELEGRAM_TOKEN` | *(none — required)* | Loaded from `.env`, fail-fast if missing |
 | `AUTHORIZED_USER_ID` | `1991846232` | Robert's Telegram ID |
 | `WONDER_URL` | `http://localhost:9600` | Wonder Engine |
 | `WATCHER_URL` | `http://localhost:9100` | Watcher |
 | `OLLAMA_URL` | `http://localhost:11434` | For intent classification |
-| `WONDER_TIMEOUT` | `120` seconds | Long — gate pipeline can take 60–90s |
+| `WONDER_TIMEOUT` | `120` | Seconds — gate pipeline can take 60–90s |
 | `OLLAMA_MODEL` | `qwen2.5:14b-instruct` | Intent classifier model |
-| `MAX_MESSAGE_LENGTH` | `4096` | Telegram's hard limit |
+| `MAX_MESSAGE_LENGTH` | `4096` | Telegram hard limit — not configurable |
 
 ---
 
 ## Known Issues (See `docs/REFACTORING.md`)
 
-| Issue | Location | Severity |
-|-------|----------|----------|
-| Telegram token hardcoded in source | `bot.py:27` | CRITICAL |
-| All config hardcoded (no env vars) | `bot.py:27–35` | HIGH |
-| NSSM service dependency missing WonderEngine | `install_service.bat:43` | MEDIUM |
-| No upper bounds on dependency pins | `requirements.txt` | LOW |
-| CLAUDE.md described old v1 Ollama bot (now fixed) | — | LOW |
+| Issue | Location | Severity | Status |
+|-------|----------|----------|--------|
+| ~~Telegram token hardcoded in source~~ | `bot.py` | ~~CRITICAL~~ | FIXED (eb8c36d) |
+| ~~All config hardcoded (no env vars)~~ | `bot.py` | ~~HIGH~~ | FIXED (845bfbd) |
+| ~~NSSM service dependency missing WonderEngine~~ | `install_service.bat` | ~~MEDIUM~~ | FIXED (6b6cf67) |
+| No upper bounds on dependency pins | `requirements.txt` | LOW | Open |
 
 ---
 
