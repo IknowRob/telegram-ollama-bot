@@ -9,7 +9,9 @@ Location: E:\telegram-ollama-bot\bot.py
 """
 
 import logging
+import os
 
+from dotenv import load_dotenv
 import httpx
 from telegram import Update
 from telegram.ext import (
@@ -24,7 +26,9 @@ from telegram.ext import (
 # CONFIGURATION
 # =============================================================================
 
-TELEGRAM_TOKEN = "8530568052:AAHh3anh3Xu2t-CJFrBC-nK49_7_nUeJyyA"
+load_dotenv()
+
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 AUTHORIZED_USER_ID = 1991846232  # Robert's Telegram ID
 
 WONDER_URL = "http://localhost:9600"
