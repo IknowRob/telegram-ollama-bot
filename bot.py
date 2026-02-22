@@ -43,7 +43,8 @@ MAX_MESSAGE_LENGTH = 4096  # Telegram hard limit
 MAX_HISTORY_TURNS = 5      # In-memory conversation turns kept per chat
 MAX_WATCHER_CHARS = 1400   # Budget for Watcher episodic context (priority)
 MAX_LOR_CHARS = 1000       # Budget for LOR knowledge context
-MIN_RELEVANCE_SCORE = 0.4  # Discard search results below this
+MIN_RELEVANCE_SCORE = 0.5  # Discard Watcher results below this
+MIN_LOR_RELEVANCE_SCORE = 0.7  # Higher bar for LOR — filters out weak keyword matches (e.g. Shakespeare)
 
 SYSTEM_PROMPT = (
     "You are Second, a locally run assistant configured by Robert.\n"
@@ -151,7 +152,7 @@ async def search_lor(query: str) -> list[dict]:
             response.raise_for_status()
             data = response.json()
             results = data.get("results", [])
-            return [r for r in results if r.get("score", 0) >= MIN_RELEVANCE_SCORE]
+            return [r for r in results if r.get("score", 0) >= MIN_LOR_RELEVANCE_SCORE]
     except Exception as e:
         logger.warning(f"LOR search failed: {e}")
         return []
@@ -289,8 +290,9 @@ def build_messages(
         final_parts.append(context)
         final_parts.append("")
         final_parts.append(
-            "Use the above context to inform your response. "
-            "If the context doesn't cover the question, say so — don't fabricate."
+            "The above context may be relevant — use it if it helps. "
+            "Prioritize the conversation over retrieved context. "
+            "Don't force irrelevant context into your answer."
         )
         final_parts.append("")
 
