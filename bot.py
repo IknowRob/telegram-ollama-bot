@@ -1,15 +1,14 @@
 #!/usr/bin/env python
 """
-Telegram-Ollama Bot
-A lightweight bot connecting Telegram to local Ollama instance.
+Telegram-Wonder Engine Bot
+Routes questions through Wonder Engine's Three Gates.
+Stores information in Watcher when Robert is telling, not asking.
 
 Author: Robert (HF Builders)
 Location: E:\telegram-ollama-bot\bot.py
 """
 
-import asyncio
 import logging
-from datetime import datetime
 
 import httpx
 from telegram import Update
@@ -28,12 +27,12 @@ from telegram.ext import (
 TELEGRAM_TOKEN = "8530568052:AAHh3anh3Xu2t-CJFrBC-nK49_7_nUeJyyA"
 AUTHORIZED_USER_ID = 1991846232  # Robert's Telegram ID
 
+WONDER_URL = "http://localhost:9600"
+WATCHER_URL = "http://localhost:9100"
 OLLAMA_URL = "http://localhost:11434"
+WONDER_TIMEOUT = 120
 OLLAMA_MODEL = "qwen2.5:14b-instruct"
-OLLAMA_TIMEOUT = 120
-OLLAMA_CONTEXT_SIZE = 8192
 
-MAX_CONTEXT_MESSAGES = 10
 MAX_MESSAGE_LENGTH = 4096  # Telegram's limit
 
 # =============================================================================
@@ -48,50 +47,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# CONVERSATION STORAGE
-# =============================================================================
-
-conversations: dict[int, list[dict]] = {}
-
-# =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
 def is_authorized(user_id: int) -> bool:
-    """Check if user is authorized to use the bot."""
     return user_id == AUTHORIZED_USER_ID
-
-
-def get_conversation(user_id: int) -> list[dict]:
-    """Get or create conversation history for a user."""
-    if user_id not in conversations:
-        conversations[user_id] = []
-    return conversations[user_id]
-
-
-def add_message(user_id: int, role: str, content: str) -> None:
-    """Add a message to conversation history, maintaining max limit."""
-    conv = get_conversation(user_id)
-    conv.append({"role": role, "content": content, "timestamp": datetime.now().isoformat()})
-
-    # Keep only last N message pairs
-    if len(conv) > MAX_CONTEXT_MESSAGES * 2:
-        conversations[user_id] = conv[-(MAX_CONTEXT_MESSAGES * 2):]
-
-
-def format_prompt(messages: list[dict]) -> str:
-    """Format conversation for Ollama prompt."""
-    system = """You are a helpful AI assistant running locally on Robert's server.
-You are powered by qwen2.5:14b-instruct via Ollama on an RTX 5070 Ti.
-Be concise but thorough. Robert is a contractor who builds custom homes."""
-
-    formatted = [system, ""]
-    for msg in messages:
-        role = "User" if msg["role"] == "user" else "Assistant"
-        formatted.append(f"{role}: {msg['content']}")
-
-    formatted.append("Assistant:")
-    return "\n".join(formatted)
 
 
 def split_message(text: str) -> list[str]:
@@ -105,7 +65,6 @@ def split_message(text: str) -> list[str]:
             parts.append(text)
             break
 
-        # Find a good split point
         split_at = text.rfind('\n', 0, MAX_MESSAGE_LENGTH)
         if split_at == -1:
             split_at = text.rfind(' ', 0, MAX_MESSAGE_LENGTH)
@@ -117,60 +76,108 @@ def split_message(text: str) -> list[str]:
 
     return parts
 
+
+def format_wonder_response(data: dict) -> str:
+    """Format Wonder Engine response for Telegram — clean, no gate log."""
+    classification = data.get("classification", "unknown").upper().replace("_", " ")
+    response_text = data.get("response", "No response.")
+    return f"[{classification}]\n\n{response_text}"
+
+
 # =============================================================================
-# OLLAMA INTEGRATION
+# INTENT DETECTION
 # =============================================================================
 
-async def query_ollama(prompt: str) -> str:
-    """Query Ollama and return the response."""
+async def classify_intent(text: str) -> str:
+    """Use Ollama to classify whether the message is a question or information.
+    Returns 'question' or 'information'."""
     try:
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(
                 f"{OLLAMA_URL}/api/generate",
                 json={
                     "model": OLLAMA_MODEL,
-                    "prompt": prompt,
+                    "prompt": (
+                        "Classify this message as either QUESTION or INFORMATION.\n"
+                        "QUESTION = the user is asking something, seeking an answer, or wants to know something.\n"
+                        "INFORMATION = the user is stating a fact, reporting something, sharing a note, or entering data.\n\n"
+                        f"Message: {text}\n\n"
+                        "Reply with exactly one word: QUESTION or INFORMATION"
+                    ),
                     "stream": False,
-                    "options": {
-                        "num_ctx": OLLAMA_CONTEXT_SIZE,
-                        "temperature": 0.7,
-                    }
-                }
+                    "options": {"temperature": 0.0, "num_predict": 10},
+                },
             )
             response.raise_for_status()
-            data = response.json()
-            return data.get("response", "No response generated.")
+            result = response.json().get("response", "").strip().upper()
+            if "INFORMATION" in result:
+                return "information"
+            return "question"
+    except Exception as e:
+        logger.warning(f"Intent classification failed: {e}, defaulting to question")
+        return "question"
+
+
+# =============================================================================
+# WONDER ENGINE INTEGRATION
+# =============================================================================
+
+async def query_wonder(query: str) -> dict:
+    """Query Wonder Engine and return the full response."""
+    try:
+        async with httpx.AsyncClient(timeout=WONDER_TIMEOUT) as client:
+            response = await client.post(
+                f"{WONDER_URL}/query",
+                json={"query": query, "include_gate_log": False},
+            )
+            response.raise_for_status()
+            return response.json()
 
     except httpx.TimeoutException:
-        raise Exception("Ollama request timed out. Model may be loading or GPU is busy.")
+        raise Exception("Wonder Engine timed out. Gates may be processing a complex query.")
     except httpx.ConnectError:
-        raise Exception("Cannot connect to Ollama. Is it running?")
+        raise Exception("Cannot connect to Wonder Engine. Is it running on port 9600?")
     except Exception as e:
-        raise Exception(f"Ollama error: {str(e)}")
+        raise Exception(f"Wonder Engine error: {str(e)}")
 
 
-async def check_ollama_health() -> tuple[bool, str]:
-    """Check if Ollama is running and model is available."""
+async def store_in_watcher(content: str, source: str = "telegram") -> bool:
+    """Store information in Watcher as an episode."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(f"{OLLAMA_URL}/api/tags")
-            response.raise_for_status()
-            models = response.json().get("models", [])
-            model_names = [m["name"] for m in models]
-
-            if OLLAMA_MODEL in model_names:
-                return True, f"Model {OLLAMA_MODEL} ready"
-            else:
-                return False, f"Model {OLLAMA_MODEL} not found"
+            response = await client.post(
+                f"{WATCHER_URL}/events",
+                json={
+                    "source": "manual",
+                    "event_type": "note",
+                    "content": content,
+                    "metadata": {"via": "telegram", "author": "robert"},
+                },
+            )
+            return response.status_code == 200
     except Exception as e:
-        return False, f"Ollama error: {str(e)}"
+        logger.error(f"Failed to store in Watcher: {e}")
+        return False
+
+
+async def check_wonder_health() -> tuple[bool, dict]:
+    """Check Wonder Engine health and return dependency status."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{WONDER_URL}/health")
+            response.raise_for_status()
+            data = response.json()
+            healthy = data.get("status") == "healthy"
+            return healthy, data
+    except Exception as e:
+        return False, {"error": str(e)}
+
 
 # =============================================================================
 # TELEGRAM HANDLERS
 # =============================================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start command."""
     user = update.effective_user
 
     if not is_authorized(user.id):
@@ -178,59 +185,92 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning(f"Unauthorized access attempt from user {user.id} ({user.username})")
         return
 
-    healthy, status = await check_ollama_health()
+    healthy, data = await check_wonder_health()
+    services = data.get("services", {})
+    axioms_intact = data.get("axioms_intact", False)
+
+    status_lines = []
+    for svc, state in services.items():
+        icon = "+" if state == "up" else "!"
+        status_lines.append(f"  [{icon}] {svc}: {state}")
 
     await update.message.reply_text(
-        f"Hello Robert!\n\n"
-        f"Connected to local Ollama.\n"
-        f"Model: {OLLAMA_MODEL}\n"
-        f"Status: {status}\n\n"
+        f"Wonder Engine {'ONLINE' if healthy else 'DEGRADED'}\n"
+        f"Axioms intact: {axioms_intact}\n\n"
+        f"Services:\n" + "\n".join(status_lines) + "\n\n"
         f"Commands:\n"
-        f"/clear - Start fresh conversation\n"
-        f"/model - Show model info\n"
+        f"/status - Engine info + axioms\n"
+        f"/remember - Store a note in Watcher\n"
         f"/help - Show this message\n\n"
-        f"Just send me a message to chat!"
+        f"Ask a question -> routes through the Three Gates\n"
+        f"State a fact -> stored in Watcher automatically"
     )
 
 
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /clear command."""
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
 
     if not is_authorized(user.id):
         return
 
-    conversations[user.id] = []
-    await update.message.reply_text("Conversation cleared. Let's start fresh!")
+    healthy, health_data = await check_wonder_health()
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{WONDER_URL}/axioms")
+            axioms = r.json() if r.status_code == 200 else []
+    except Exception:
+        axioms = []
+
+    lines = [
+        f"Wonder Engine: {'healthy' if healthy else 'degraded'}",
+        f"Endpoint: {WONDER_URL}",
+        f"Timeout: {WONDER_TIMEOUT}s",
+        "",
+    ]
+
+    services = health_data.get("services", {})
+    if services:
+        lines.append("Dependencies:")
+        for svc, state in services.items():
+            lines.append(f"  {svc}: {state}")
+        lines.append("")
+
+    if axioms:
+        lines.append("The Three Axioms:")
+        for i, a in enumerate(axioms, 1):
+            statement = a if isinstance(a, str) else a.get("statement", str(a))
+            lines.append(f"  {i}. {statement}")
+
+    await update.message.reply_text("\n".join(lines))
 
 
-async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /model command."""
+async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
 
     if not is_authorized(user.id):
         return
 
-    healthy, status = await check_ollama_health()
-    conv_len = len(get_conversation(user.id))
+    text = update.message.text.replace("/remember", "", 1).strip()
+    if not text:
+        await update.message.reply_text("Usage: /remember <something to store>")
+        return
 
-    await update.message.reply_text(
-        f"Model: {OLLAMA_MODEL}\n"
-        f"Endpoint: {OLLAMA_URL}\n"
-        f"Context Size: {OLLAMA_CONTEXT_SIZE} tokens\n"
-        f"Timeout: {OLLAMA_TIMEOUT}s\n"
-        f"Messages in memory: {conv_len}\n\n"
-        f"Status: {status}"
-    )
+    await update.message.chat.send_action("typing")
+
+    stored = await store_in_watcher(text)
+    if stored:
+        await update.message.reply_text(f"Remembered.")
+        logger.info(f"Stored via /remember: {text[:80]}...")
+    else:
+        await update.message.reply_text("Failed to store. Is Watcher running?")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /help command."""
     await start(update, context)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle incoming text messages."""
     user = update.effective_user
     message_text = update.message.text
 
@@ -238,30 +278,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Sorry, this bot is private.")
         return
 
-    logger.info(f"Message from {user.id}: {message_text[:50]}...")
+    logger.info(f"Message from {user.id}: {message_text[:80]}...")
 
-    # Add user message to history
-    add_message(user.id, "user", message_text)
-
-    # Show typing indicator
     await update.message.chat.send_action("typing")
 
     try:
-        # Build prompt with context
-        conversation = get_conversation(user.id)
-        prompt = format_prompt(conversation)
+        intent = await classify_intent(message_text)
+        logger.info(f"Intent: {intent}")
 
-        # Query Ollama
-        response = await query_ollama(prompt)
+        if intent == "information":
+            stored = await store_in_watcher(message_text)
+            if stored:
+                await update.message.reply_text("Noted.")
+                logger.info(f"Auto-stored as information: {message_text[:80]}...")
+            else:
+                await update.message.reply_text("Failed to store. Is Watcher running?")
+        else:
+            data = await query_wonder(message_text)
+            response_text = format_wonder_response(data)
 
-        # Add assistant response to history
-        add_message(user.id, "assistant", response)
+            for part in split_message(response_text):
+                await update.message.reply_text(part)
 
-        # Send response (split if too long)
-        for part in split_message(response):
-            await update.message.reply_text(part)
-
-        logger.info(f"Response sent: {response[:50]}...")
+            classification = data.get("classification", "?")
+            latency = data.get("latency_ms", 0)
+            logger.info(f"Response sent: {classification}, {latency}ms")
 
     except Exception as e:
         error_msg = str(e)
@@ -273,23 +314,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # =============================================================================
 
 def main() -> None:
-    """Start the bot."""
-    logger.info("Starting Telegram-Ollama Bot...")
+    logger.info("Starting Telegram-Wonder Engine Bot...")
     logger.info(f"Authorized user: {AUTHORIZED_USER_ID}")
-    logger.info(f"Ollama endpoint: {OLLAMA_URL}")
-    logger.info(f"Model: {OLLAMA_MODEL}")
+    logger.info(f"Wonder Engine: {WONDER_URL}")
 
-    # Create application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Add handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("clear", clear_command))
-    application.add_handler(CommandHandler("model", model_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("remember", remember_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Run the bot
     logger.info("Bot is running. Press Ctrl+C to stop.")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
