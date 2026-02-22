@@ -39,8 +39,8 @@ C:\nssm\nssm-2.24\win64\nssm.exe set TelegramOllamaBot AppRotateOnline 1
 REM Create logs directory
 if not exist "E:\telegram-ollama-bot\logs" mkdir "E:\telegram-ollama-bot\logs"
 
-REM Set service dependencies (Ollama must be running)
-C:\nssm\nssm-2.24\win64\nssm.exe set TelegramOllamaBot DependOnService Ollama
+REM Set service dependencies (Wonder Engine must be running)
+C:\nssm\nssm-2.24\win64\nssm.exe set TelegramOllamaBot DependOnService WonderEngine
 
 REM Start the service
 C:\nssm\nssm-2.24\win64\nssm.exe start TelegramOllamaBot
